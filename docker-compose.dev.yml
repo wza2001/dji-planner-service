@@ -1,0 +1,16 @@
+services:
+  dji-planner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dji-planner:dev
+    container_name: dji-planner-dev
+    ports:
+      - "8085:8000"
+    volumes:
+      # 挂载宿主机 app 目录以支持热重载
+      - ./app:/app/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
