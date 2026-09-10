@@ -1,9 +1,9 @@
 import json
 from typing import Union
 from shapely.geometry import shape, Polygon
-from app.sore.parsers.base import BaseBoundaryParser
+from app.core.parsers.base import BaseBoundaryParser
 
-class GeoJsonParser(BaseBoundaryParser):
+class GeoJSONParser(BaseBoundaryParser):
     def parse(self, data: Union[str, bytes, dict]) -> Polygon:
         if isinstance(data, (str, bytes)):
             data = json.loads(data)
