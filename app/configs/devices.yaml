@@ -6,6 +6,7 @@ drones:
     supported_payload_ids:
       - zenmuse_p1_35mm
       - share_102s_oblique
+      - riebo_dg6p_oblique # 新增睿珀五镜头
   matrice_300_rtk:
     name: "Matrice 300 RTK"
     drone_enum: 60
@@ -19,6 +20,14 @@ drones:
     drone_sub_enum: 0
     supported_payload_ids:
       - mavic_3e_wide
+  matrice_400:
+    name: "Matrice 400"
+    drone_enum: 103
+    drone_sub_enum: 0
+    supported_payload_ids:
+      - matrice_4e_camera
+      - share_102s_oblique
+      - riebo_dg6p_oblique # 新增睿珀五镜头
 
 payloads:
   zenmuse_p1_35mm:
@@ -45,3 +54,24 @@ payloads:
     sensor_width_mm: 17.3
     sensor_height_mm: 13.0
     focal_length_mm: 12.3
+  matrice_4e_camera:
+    name: "Matrice 4E Integrated Camera"
+    payload_enum: 42
+    has_gimbal: true
+    lens_type: "single"
+    # 根据官方发布的相机光学规格填写
+    sensor_width_mm: 17.3
+    sensor_height_mm: 13.0
+    focal_length_mm: 12.3
+  riebo_dg6p_oblique:
+    name: "Riebo DG6P Oblique (40mm+4x56mm)"
+    payload_enum: 65535 # 第三方 PSDK 标准自定义载荷枚举
+    has_gimbal: false # 刚性固定挂载，无大疆云台控制协议
+    lens_type: "oblique_5lens"
+    sensor_width_mm: 35.90
+    sensor_height_mm: 23.89
+    focal_length_mm: 40.0 # 使用下视镜头基准焦距（精细计算可用标定值 40.28）
+    pixel_width: 9568
+    pixel_height: 6368
+    pixel_size_um: 3.752
+    fixed_pitch_deg: -90.0 # 中心镜头垂直朝下
