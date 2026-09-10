@@ -12,6 +12,11 @@ from shapely.geometry import Polygon, MultiPolygon, LineString, Point
 from shapely.validation import make_valid
 import simplekml
 import fiona
+import uuid
+from app.models.flight_plan import FlightPlan, GenericWaypoint
+from app.core.exporters.dji_exporter import DJIWPMLPackageExporter
+from app.core.exporters.geojson_exporter import GeoJSONExporter
+
 
 from app.core.calc_params import calculate_flight_parameters
 from app.utils.geo_geometry import get_meter_degree_factors, interpolate_line_points
@@ -105,24 +110,6 @@ def calculate_heading(p1: tuple, p2: tuple) -> float:
     bearing = math.atan2(x, y)
     deg = math.degrees(bearing)
     return (deg + 360.0) % 360.0
-
-
-def get_turn_mode(heading_in: float, heading_out: float) -> str:
-    """
-    根据进入/离开航向变化量选择 DJI WPML 转弯模式字符串。
-
-    - 变化 < 10°  : smoothTransition
-    - 变化 < 45°  : toPointAndStopWithContinuityCurvature
-    - 变化 >= 45° : toPointAndStopWithDiscontinuityCurvature
-    """
-    diff = abs(heading_out - heading_in)
-    change = min(diff, 360.0 - diff)
-    if change < 10:
-        return "smoothTransition"
-    elif change < 45:
-        return "toPointAndStopWithContinuityCurvature"
-    else:
-        return "toPointAndStopWithDiscontinuityCurvature"
 
 
 def classify_and_enrich_waypoints(waypoints: list[dict]) -> list[dict]:
@@ -534,355 +521,213 @@ def generate_dense_grid_flight_path(boundary_geom: Polygon | MultiPolygon,
     return ordered_waypoints
 
 
-def generate_dji_template_kml(waypoints: list = None, drone_enum: int = 68, payload_enum: int = 52, speed: float = 12) -> str:
-    """
-    生成 DJI WPML 标准 template.kml 字符串（任务元数据）。
-
-    Args:
-        waypoints: 航点列表。
-        drone_enum: 无人机型号枚举值，默认 68（Mavic 3 Enterprise）。
-        payload_enum: 负载型号枚举值，默认 52（H20T）。
-        speed: 全局过渡速度（m/s）。
-
-    Returns:
-        template.kml 的 XML 字符串。
-    """
-    create_time = int(time.time() * 1000)
-
-    placemarks_xml = ""
-    if waypoints:
-        is_dict = isinstance(waypoints[0], dict)
-        nodes = []
-        for idx in range(len(waypoints)):
-            if is_dict:
-                wp = waypoints[idx]
-                lon, lat = wp["lon"], wp["lat"]
-            else:
-                lon, lat = waypoints[idx][0], waypoints[idx][1]
-            nodes.append(f'''    <Placemark>
-      <Point>
-        <coordinates>{lon:.6f},{lat:.6f}</coordinates>
-      </Point>
-      <wpml:index>{idx}</wpml:index>
-      <wpml:useGlobalHeight>1</wpml:useGlobalHeight>
-      <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
-      <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
-      <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>
-    </Placemark>''')
-        placemarks_xml = "\n".join(nodes)
-
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.2">
-  <Document>
-    <wpml:createTime>{create_time}</wpml:createTime>
-    <wpml:updateTime>{create_time}</wpml:updateTime>
-    <wpml:missionConfig>
-      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
-      <wpml:finishAction>goHome</wpml:finishAction>
-      <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
-      <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
-      <wpml:globalTransitionalSpeed>{speed}</wpml:globalTransitionalSpeed>
-      <wpml:droneInfo>
-        <wpml:droneEnumValue>{drone_enum}</wpml:droneEnumValue>
-        <wpml:droneSubEnumValue>0</wpml:droneSubEnumValue>
-      </wpml:droneInfo>
-      <wpml:payloadInfo>
-        <wpml:payloadEnumValue>{payload_enum}</wpml:payloadEnumValue>
-        <wpml:payloadSubEnumValue>0</wpml:payloadSubEnumValue>
-        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-      </wpml:payloadInfo>
-    </wpml:missionConfig>
-    <Folder>
-      <wpml:templateId>0</wpml:templateId>
-      <wpml:waylineId>0</wpml:waylineId>
-      <wpml:templateType>waypoint</wpml:templateType>
-      <wpml:waylineCoordinateSysParam>
-        <wpml:coordinateMode>WGS84</wpml:coordinateMode>
-        <wpml:heightMode>relativeToStartPoint</wpml:heightMode>
-      </wpml:waylineCoordinateSysParam>
-      <wpml:autoFlightSpeed>{speed}</wpml:autoFlightSpeed>
-      <wpml:globalHeight>60.0</wpml:globalHeight>
-      <wpml:globalWaypointHeadingParam>
-        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-      </wpml:globalWaypointHeadingParam>
-      <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
-      <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
-{placemarks_xml}
-    </Folder>
-  </Document>
-</kml>'''
-
-
-def generate_dji_waylines_wpml(waypoints: list,
-                               flight_speed: float = 10,
-                               flight_alt: float = 120,
-                               height_mode: str = "relativeToStartPoint",
-                               photo_spacing_m: float = 20.0,
-                               drone_enum: int = 68,
-                               payload_enum: int = 52) -> str:
-    """
-    生成 DJI WPML 标准 waylines.wpml 字符串（航点执行细节）。
-
-    结构严格遵循 DJI WPML 1.0.2：
-      Document -> Folder -> Placemark -> Point + wpml:waypoint + actionGroup
-
-    兼容两种输入：
-      - list[dict]（sparse 模式，新精简航点）：仅起飞点配置动作组
-        （云台朝下 + 全局 multipleDistance 触发拍照），其余航点无动作组，
-        转弯模式按航向动态计算。
-      - list[tuple]（dense 模式，旧版密集航点）：逐点配置云台与等距拍照动作，
-        保持历史行为。
-
-    Args:
-        waypoints: 航点列表（list[dict] 或 list[tuple[float, float, float]]）。
-        flight_speed: 自动飞行速度（m/s）。
-        flight_alt: 飞行相对高度（m）。
-        height_mode: 高度模式，默认 relativeToStartPoint。
-        photo_spacing_m: 等距拍照间隔（米），用于 multipleDistance 触发。
-
-    Returns:
-        waylines.wpml 的 XML 字符串。
-    """
-    if not waypoints:
-        return ""
-
-    # 判断输入类型：list[dict] (sparse) 还是 list[tuple] (dense)
-    is_dict = isinstance(waypoints[0], dict)
-    last_idx = len(waypoints) - 1
-
-    # ── 计算总距离和总时长 ──
-    total_distance = 0.0
-    seg_distances = [0.0]  # 每段距离，seg_distances[i] = waypoints[i-1] -> waypoints[i]
-    for i in range(1, len(waypoints)):
-        if is_dict:
-            lon_i = waypoints[i]["lon"]
-            lat_i = waypoints[i]["lat"]
-            lon_prev = waypoints[i - 1]["lon"]
-            lat_prev = waypoints[i - 1]["lat"]
-        else:
-            lon_i, lat_i = waypoints[i][0], waypoints[i][1]
-            lon_prev, lat_prev = waypoints[i - 1][0], waypoints[i - 1][1]
-
-        dlon = lon_i - lon_prev
-        dlat = lat_i - lat_prev
-        # 使用 haversine 更精确
-        lat_mid = math.radians((lat_i + lat_prev) / 2)
-        m_per_deg_lat = 111132.92 - 559.82 * math.cos(2 * lat_mid) + 1.175 * math.cos(4 * lat_mid)
-        m_per_deg_lon = 111412.84 * math.cos(lat_mid) - 93.5 * math.cos(3 * lat_mid)
-        seg_m = math.hypot(dlon * m_per_deg_lon, dlat * m_per_deg_lat)
-        seg_distances.append(seg_m)
-        total_distance += seg_m
-
-    duration = total_distance / flight_speed if flight_speed > 0 else 0
-
-    # ── 生成每个航点的 Placemark ──
-    placemark_nodes = []
-    cumulative_dist = 0.0  # 累计飞行距离，用于 dense 模式的 multipleDistance 判断
-
-    for idx in range(len(waypoints)):
-        if is_dict:
-            wp = waypoints[idx]
-            lon = wp["lon"]
-            lat = wp["lat"]
-            alt = wp["alt"]
-            wp_type = wp.get("type", "transit")
-            turn_mode = get_turn_mode(wp.get("heading_in", 0.0), wp.get("heading_out", 0.0))
-        else:
-            lon, lat, alt = waypoints[idx]
-            wp_type = "takeoff" if idx == 0 else ("landing" if idx == last_idx else "transit")
-            turn_mode = "toPointAndStopWithDiscontinuityCurvature"
-
-        cumulative_dist += seg_distances[idx]
-
-        # 动作组构建
-        action_groups_xml = ""
-
-        if is_dict:
-            # ── sparse 模式：仅起飞点配置动作组 ──
-            if idx == 0:
-                # 动作组 0：reachPoint 触发，云台朝下
-                gimbal_action = f'''
-        <wpml:action>
-          <wpml:actionId>0</wpml:actionId>
-          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:gimbalPitchRotateAngle>-90</wpml:gimbalPitchRotateAngle>
-            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
-            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
-            <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
-            <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
-            <wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>'''
-                # 动作组 1：multipleDistance 触发，覆盖整个航线，统一等距拍照
-                photo_action = f'''
-        <wpml:action>
-          <wpml:actionId>1</wpml:actionId>
-          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>'''
-                action_groups_xml = f'''
-      <wpml:actionGroup>
-        <wpml:actionGroupId>0</wpml:actionGroupId>
-        <wpml:actionGroupStartIndex>0</wpml:actionGroupStartIndex>
-        <wpml:actionGroupEndIndex>0</wpml:actionGroupEndIndex>
-        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
-        <wpml:actionTrigger>
-          <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
-        </wpml:actionTrigger>{gimbal_action}
-      </wpml:actionGroup>
-      <wpml:actionGroup>
-        <wpml:actionGroupId>1</wpml:actionGroupId>
-        <wpml:actionGroupStartIndex>0</wpml:actionGroupStartIndex>
-        <wpml:actionGroupEndIndex>{last_idx}</wpml:actionGroupEndIndex>
-        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
-        <wpml:actionTrigger>
-          <wpml:actionTriggerType>multipleDistance</wpml:actionTriggerType>
-          <wpml:actionTriggerParam>{photo_spacing_m:.2f}</wpml:actionTriggerParam>
-        </wpml:actionTrigger>{photo_action}
-      </wpml:actionGroup>'''
-            else:
-                # 中间航点 / landing：无动作组
-                action_groups_xml = ""
-        else:
-            # ── dense 模式：保留旧版逐点动作逻辑 ──
-            is_photo_point = (idx > 0) and (cumulative_dist >= photo_spacing_m)
-
-            gimbal_action = f'''
-        <wpml:action>
-          <wpml:actionId>0</wpml:actionId>
-          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:gimbalPitchRotateAngle>-90</wpml:gimbalPitchRotateAngle>
-            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
-            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
-            <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
-            <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
-            <wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>'''
-
-            photo_action = ""
-            if is_photo_point:
-                photo_action = f'''
-        <wpml:action>
-          <wpml:actionId>1</wpml:actionId>
-          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>'''
-
-            if idx == 0:
-                action_groups_xml = f'''
-      <wpml:actionGroup>
-        <wpml:actionGroupId>0</wpml:actionGroupId>
-        <wpml:actionGroupStartIndex>0</wpml:actionGroupStartIndex>
-        <wpml:actionGroupEndIndex>0</wpml:actionGroupEndIndex>
-        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
-        <wpml:actionTrigger>
-          <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
-        </wpml:actionTrigger>{gimbal_action}
-      </wpml:actionGroup>'''
-            elif is_photo_point:
-                action_groups_xml = f'''
-      <wpml:actionGroup>
-        <wpml:actionGroupId>{idx}</wpml:actionGroupId>
-        <wpml:actionGroupStartIndex>{idx}</wpml:actionGroupStartIndex>
-        <wpml:actionGroupEndIndex>{idx}</wpml:actionGroupEndIndex>
-        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
-        <wpml:actionTrigger>
-          <wpml:actionTriggerType>multipleDistance</wpml:actionTriggerType>
-          <wpml:actionTriggerParam>{photo_spacing_m:.2f}</wpml:actionTriggerParam>
-        </wpml:actionTrigger>{gimbal_action}{photo_action}
-      </wpml:actionGroup>'''
-            else:
-                action_groups_xml = ""
-
-        # 航点核心参数
-        placemark_xml = f'''
-    <Placemark>
-      <Point>
-        <coordinates>{lon:.6f},{lat:.6f}</coordinates>
-      </Point>
-      <wpml:index>{idx}</wpml:index>
-      <wpml:executeHeight>{alt:.1f}</wpml:executeHeight>
-      <wpml:waypointSpeed>{flight_speed}</wpml:waypointSpeed>
-      <wpml:waypointHeadingParam>
-        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
-      </wpml:waypointHeadingParam>
-      <wpml:waypointTurnParam>
-        <wpml:waypointTurnMode>{turn_mode}</wpml:waypointTurnMode>
-        <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
-      </wpml:waypointTurnParam>
-      <wpml:useStraightLine>0</wpml:useStraightLine>
-      <wpml:gimbalPitchAngle>-90</wpml:gimbalPitchAngle>{action_groups_xml}
-    </Placemark>'''
-        placemark_nodes.append(placemark_xml)
-
-    placemarks_xml = "".join(placemark_nodes)
-
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.2">
-  <Document>
-    <name>waylines</name>
-    <wpml:missionConfig>
-      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
-      <wpml:finishAction>goHome</wpml:finishAction>
-      <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
-      <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
-      <wpml:globalTransitionalSpeed>{flight_speed}</wpml:globalTransitionalSpeed>
-      <wpml:globalRTHHeight>100</wpml:globalRTHHeight>
-      <wpml:droneInfo>
-        <wpml:droneEnumValue>{drone_enum}</wpml:droneEnumValue>
-        <wpml:droneSubEnumValue>0</wpml:droneSubEnumValue>
-      </wpml:droneInfo>
-      <wpml:payloadInfo>
-        <wpml:payloadEnumValue>{payload_enum}</wpml:payloadEnumValue>
-        <wpml:payloadSubEnumValue>0</wpml:payloadSubEnumValue>
-        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-      </wpml:payloadInfo>
-    </wpml:missionConfig>
-    <Folder>
-      <wpml:templateId>0</wpml:templateId>
-      <wpml:waylineId>0</wpml:waylineId>
-      <wpml:templateType>waypoint</wpml:templateType>
-      <wpml:distance>{total_distance:.2f}</wpml:distance>
-      <wpml:duration>{duration:.2f}</wpml:duration>
-      <wpml:autoFlightSpeed>{flight_speed}</wpml:autoFlightSpeed>
-      <wpml:executeHeightMode>{height_mode}</wpml:executeHeightMode>
-      <wpml:payloadParam>
-        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-      </wpml:payloadParam>{placemarks_xml}
-    </Folder>
-  </Document>
-</kml>'''
-
-
-def package_dji_kmz(template_kml_str: str, waylines_wpml_str: str, output_kmz_path: str) -> None:
-    """
-    将 DJI WPML 的 template.kml 与 waylines.wpml 打包为 KMZ。
-
-    Args:
-        template_kml_str: template.kml 的 XML 字符串。
-        waylines_wpml_str: waylines.wpml 的 XML 字符串。
-        output_kmz_path: 输出 KMZ 文件路径。
-    """
-    with zipfile.ZipFile(output_kmz_path, 'w', zipfile.ZIP_DEFLATED) as kmz:
-        kmz.writestr('wpmz/template.kml', template_kml_str.encode('utf-8'))
-        kmz.writestr('wpmz/waylines.wpml', waylines_wpml_str.encode('utf-8'))
-
-
 def _wp_coord(wp):
     """统一从 dict 或 tuple 航点中提取 (lon, lat)。"""
     if isinstance(wp, dict):
         return wp["lon"], wp["lat"]
     return wp[0], wp[1]
+
+
+
+def plan_flight_geometry(
+    boundary_geom: Polygon | MultiPolygon,
+    flight_alt_agl: float = 120.0,
+    flight_speed: float = 10.0,
+    camera_info: dict = None,
+    forward_overlap: float = 0.80,
+    side_overlap: float = 0.70,
+    waypoint_mode: str = "sparse"
+) -> FlightPlan:
+    if camera_info is None:
+        camera_info = {"fov_horizontal_deg": [48.0, 36.0], "fov_vertical_deg": [34.0, 24.0]}
+
+    fov_h = parse_fov_value(camera_info.get("fov_horizontal_deg", 48.0))
+    fov_v = parse_fov_value(camera_info.get("fov_vertical_deg", 34.0))
+
+    calc_res = calculate_flight_parameters(
+        agl_m=flight_alt_agl, fov_h_deg=fov_h, fov_v_deg=fov_v,
+        forward_overlap=forward_overlap, side_overlap=side_overlap,
+        flight_speed_m_s=flight_speed
+    )
+
+    line_spacing_m = calc_res["line_spacing_m"]
+    photo_spacing_m = calc_res.get("photo_spacing_m", calc_res.get("forward_spacing_m", 20.0))
+
+    sub_geom = boundary_geom
+    if not sub_geom.is_valid:
+        sub_geom = make_valid(sub_geom)
+
+    sub_polys = [sub_geom] if isinstance(sub_geom, Polygon) else list(sub_geom.geoms)
+
+    all_waypoints_raw = []
+    for p_idx, poly in enumerate(sub_polys):
+        if poly.is_empty or poly.area < 1e-8:
+            continue
+
+        if waypoint_mode == "dense":
+            waypoints = generate_dense_grid_flight_path(
+                boundary_geom=poly,
+                line_spacing_m=line_spacing_m,
+                photo_spacing_m=photo_spacing_m,
+                alt_agl=flight_alt_agl
+            )
+        else:
+            waypoints = generate_grid_flight_path(
+                boundary_geom=poly,
+                line_spacing_m=line_spacing_m,
+                photo_spacing_m=photo_spacing_m,
+                alt_agl=flight_alt_agl
+            )
+        if waypoints:
+            all_waypoints_raw.extend(waypoints)
+
+    total_distance = 0.0
+    generic_waypoints = []
+
+    if all_waypoints_raw:
+        for i in range(1, len(all_waypoints_raw)):
+            wp_curr = _wp_coord(all_waypoints_raw[i])
+            wp_prev = _wp_coord(all_waypoints_raw[i - 1])
+            m_lat, m_lon = get_meter_degree_factors((wp_curr[1] + wp_prev[1]) / 2.0)
+            dx = (wp_curr[0] - wp_prev[0]) * m_lon
+            dy = (wp_curr[1] - wp_prev[1]) * m_lat
+            total_distance += np.hypot(dx, dy)
+
+        for i, wp in enumerate(all_waypoints_raw):
+            if isinstance(wp, dict):
+                lon, lat = wp["lon"], wp["lat"]
+                alt = wp.get("alt", flight_alt_agl)
+                speed = wp.get("speed", flight_speed)
+                wp_type = wp.get("type", "transit")
+                heading_in = wp.get("heading_in", 0.0)
+                heading_out = wp.get("heading_out", 0.0)
+                heading_change = wp.get("heading_change", 0.0)
+                segment_idx = wp.get("segment_idx", -1)
+            else:
+                lon, lat = wp[0], wp[1]
+                alt = wp[2] if len(wp) > 2 else flight_alt_agl
+                speed = flight_speed
+                wp_type = "transit"
+                heading_in = 0.0
+                heading_out = 0.0
+                heading_change = 0.0
+                segment_idx = -1
+
+            gw = GenericWaypoint(
+                index=i,
+                lon=lon,
+                lat=lat,
+                alt=alt,
+                speed=speed,
+                type=wp_type,
+                heading_in=heading_in,
+                heading_out=heading_out,
+                heading_change=heading_change,
+                gimbal_pitch=-90.0,
+                segment_idx=segment_idx
+            )
+            generic_waypoints.append(gw)
+
+    duration = total_distance / flight_speed if flight_speed > 0 else 0
+
+    return FlightPlan(
+        plan_id=str(uuid.uuid4()),
+        flight_alt_agl=flight_alt_agl,
+        flight_speed=flight_speed,
+        total_distance_m=total_distance,
+        estimated_duration_s=duration,
+        photo_spacing_m=photo_spacing_m,
+        waypoint_mode=waypoint_mode,
+        waypoints=generic_waypoints
+    )
+
+def _convert_to_flight_plan(waypoints: list, speed: float = 12.0, alt: float = 120.0, photo_spacing_m: float = 20.0) -> FlightPlan:
+    if not waypoints:
+        return FlightPlan(
+            plan_id=str(uuid.uuid4()),
+            flight_alt_agl=alt,
+            flight_speed=speed,
+            total_distance_m=0.0,
+            estimated_duration_s=0.0,
+            photo_spacing_m=photo_spacing_m,
+            waypoint_mode="sparse",
+            waypoints=[]
+        )
+
+    total_distance = 0.0
+    for i in range(1, len(waypoints)):
+        wp_curr = _wp_coord(waypoints[i])
+        wp_prev = _wp_coord(waypoints[i - 1])
+        m_lat, m_lon = get_meter_degree_factors((wp_curr[1] + wp_prev[1]) / 2.0)
+        dx = (wp_curr[0] - wp_prev[0]) * m_lon
+        dy = (wp_curr[1] - wp_prev[1]) * m_lat
+        total_distance += np.hypot(dx, dy)
+
+    generic_waypoints = []
+    waypoint_mode = "sparse"
+    for i, wp in enumerate(waypoints):
+        if isinstance(wp, dict):
+            lon, lat = wp["lon"], wp["lat"]
+            wp_alt = wp.get("alt", alt)
+            wp_speed = wp.get("speed", speed)
+            wp_type = wp.get("type", "transit")
+            heading_in = wp.get("heading_in", 0.0)
+            heading_out = wp.get("heading_out", 0.0)
+            heading_change = wp.get("heading_change", 0.0)
+            segment_idx = wp.get("segment_idx", -1)
+            waypoint_mode = "sparse"
+        else:
+            lon, lat = wp[0], wp[1]
+            wp_alt = wp[2] if len(wp) > 2 else alt
+            wp_speed = speed
+            wp_type = "transit"
+            heading_in = 0.0
+            heading_out = 0.0
+            heading_change = 0.0
+            segment_idx = -1
+            waypoint_mode = "dense"
+
+        gw = GenericWaypoint(
+            index=i,
+            lon=lon,
+            lat=lat,
+            alt=wp_alt,
+            speed=wp_speed,
+            type=wp_type,
+            heading_in=heading_in,
+            heading_out=heading_out,
+            heading_change=heading_change,
+            gimbal_pitch=-90.0,
+            segment_idx=segment_idx
+        )
+        generic_waypoints.append(gw)
+
+    duration = total_distance / speed if speed > 0 else 0
+    return FlightPlan(
+        plan_id=str(uuid.uuid4()),
+        flight_alt_agl=alt,
+        flight_speed=speed,
+        total_distance_m=total_distance,
+        estimated_duration_s=duration,
+        photo_spacing_m=photo_spacing_m,
+        waypoint_mode=waypoint_mode,
+        waypoints=generic_waypoints
+    )
+
+def generate_dji_template_kml(waypoints: list = None, drone_enum: int = 68, payload_enum: int = 52, speed: float = 12) -> str:
+    plan = _convert_to_flight_plan(waypoints, speed=speed)
+    from app.core.exporters.dji_exporter import generate_dji_template_kml as ext_gen_template
+    return ext_gen_template(plan, drone_enum=drone_enum, payload_enum=payload_enum)
+
+def generate_dji_waylines_wpml(waypoints: list, flight_speed: float = 10, flight_alt: float = 120, height_mode: str = "relativeToStartPoint", photo_spacing_m: float = 20.0, drone_enum: int = 68, payload_enum: int = 52) -> str:
+    plan = _convert_to_flight_plan(waypoints, speed=flight_speed, alt=flight_alt, photo_spacing_m=photo_spacing_m)
+    from app.core.exporters.dji_exporter import generate_dji_waylines_wpml as ext_gen_waylines
+    return ext_gen_waylines(plan, drone_enum=drone_enum, payload_enum=payload_enum)
+
+def package_dji_kmz(template_kml_str: str, waylines_wpml_str: str, output_kmz_path: str) -> None:
+    with zipfile.ZipFile(output_kmz_path, 'w', zipfile.ZIP_DEFLATED) as kmz:
+        kmz.writestr('wpmz/template.kml', template_kml_str.encode('utf-8'))
+        kmz.writestr('wpmz/waylines.wpml', waylines_wpml_str.encode('utf-8'))
 
 
 def plan_routes_from_safe_airspace(safe_airspace_file: str,
@@ -958,9 +803,10 @@ def plan_routes_from_safe_airspace(safe_airspace_file: str,
     line_spacing_m = calc_res["line_spacing_m"]
     photo_spacing_m = calc_res.get("forward_spacing_m", 20.0)
 
+
     print(f"🔄 正在精算图论 DFS 与边界避障航线... (waypoint_mode={waypoint_mode})")
-    success_count = 0
-    all_waypoints = []
+
+    polys_to_plan = []
 
     for idx, row in flight_wgs84.iterrows():
         sub_geom = row.geometry
@@ -979,95 +825,55 @@ def plan_routes_from_safe_airspace(safe_airspace_file: str,
 
         if sub_geom.geom_type not in ['Polygon', 'MultiPolygon']:
             continue
+
         if not sub_geom.is_valid:
             sub_geom = make_valid(sub_geom)
 
-        sub_polys = [sub_geom] if isinstance(sub_geom, Polygon) else list(sub_geom.geoms)
+        if sub_geom.geom_type == 'Polygon':
+            polys_to_plan.append(sub_geom)
+        else:
+            polys_to_plan.extend(list(sub_geom.geoms))
 
-        for p_idx, poly in enumerate(sub_polys):
-            if poly.is_empty or poly.area < 1e-8:
-                continue
-
-            if waypoint_mode == "dense":
-                # 旧版密集航点：返回 list[tuple]，逐点拍照
-                waypoints = generate_dense_grid_flight_path(
-                    boundary_geom=poly,
-                    line_spacing_m=line_spacing_m,
-                    photo_spacing_m=photo_spacing_m,
-                    alt_agl=flight_alt_agl
-                )
-            else:
-                # 默认 sparse：精简航点（list[dict]）
-                waypoints = generate_grid_flight_path(
-                    boundary_geom=poly,
-                    line_spacing_m=line_spacing_m,
-                    photo_spacing_m=photo_spacing_m,
-                    alt_agl=flight_alt_agl
-                )
-
-            if not waypoints:
-                continue
-
-            all_waypoints.extend(waypoints)
-            success_count += 1
+    if polys_to_plan:
+        combined_poly = MultiPolygon(polys_to_plan) if len(polys_to_plan) > 1 else polys_to_plan[0]
+        flight_plan = plan_flight_geometry(
+            boundary_geom=combined_poly,
+            flight_alt_agl=flight_alt_agl,
+            flight_speed=flight_speed,
+            camera_info=camera_info,
+            forward_overlap=forward_overlap,
+            side_overlap=side_overlap,
+            waypoint_mode=waypoint_mode
+        )
+    else:
+        flight_plan = FlightPlan(
+            plan_id=str(uuid.uuid4()),
+            flight_alt_agl=flight_alt_agl,
+            flight_speed=flight_speed,
+            total_distance_m=0.0,
+            estimated_duration_s=0.0,
+            photo_spacing_m=0.0,
+            waypoint_mode=waypoint_mode,
+            waypoints=[]
+        )
 
     os.makedirs(os.path.dirname(output_kmz), exist_ok=True)
 
-    # GeoJSON 输出路径：将 .kmz 后缀替换为 _waypoints.geojson
     if output_kmz.lower().endswith(".kmz"):
         geojson_path = output_kmz[:-4] + "_waypoints.geojson"
     else:
         geojson_path = output_kmz + "_waypoints.geojson"
 
-    if all_waypoints:
-        total_distance = sum(
-            np.hypot(_wp_coord(all_waypoints[i])[0] - _wp_coord(all_waypoints[i - 1])[0],
-                     _wp_coord(all_waypoints[i])[1] - _wp_coord(all_waypoints[i - 1])[1])
-            for i in range(1, len(all_waypoints))
-        ) * 111000  # 粗略转换为米
+    dji_exporter = DJIWPMLPackageExporter()
+    dji_exporter.export(flight_plan, drone_enum=drone_enum, payload_enum=payload_enum, output_path=output_kmz)
 
-        duration = total_distance / flight_speed if flight_speed > 0 else 0
-
-        template_str = generate_dji_template_kml(
-            waypoints=all_waypoints,
-            drone_enum=drone_enum,
-            payload_enum=payload_enum,
-            speed=flight_speed
-        )
-        waylines_str = generate_dji_waylines_wpml(
-            waypoints=all_waypoints,
-            flight_speed=flight_speed,
-            flight_alt=flight_alt_agl,
-            height_mode="relativeToStartPoint",
-            photo_spacing_m=photo_spacing_m,
-            drone_enum=drone_enum,
-            payload_enum=payload_enum
-        )
-        package_dji_kmz(template_str, waylines_str, output_kmz)
-
-        # GeoJSON 输出（sparse 模式为丰富属性的 dict；dense 模式转为基础 dict）
-        if waypoint_mode == "sparse":
-            geojson_waypoints = all_waypoints
-        else:
-            geojson_waypoints = [
-                {
-                    "lon": wp[0], "lat": wp[1], "alt": wp[2],
-                    "type": "transit", "segment_idx": -1,
-                    "heading_in": 0.0, "heading_out": 0.0, "heading_change": 0.0
-                }
-                for wp in all_waypoints
-            ]
-        save_waypoints_geojson(geojson_waypoints, geojson_path)
-    else:
-        # 无航点时生成空 KMZ，避免下游报错
-        with zipfile.ZipFile(output_kmz, 'w', zipfile.ZIP_DEFLATED) as kmz:
-            pass
+    geojson_exporter = GeoJSONExporter()
+    geojson_exporter.export(flight_plan, output_path=geojson_path)
 
     mode_label = "精简" if waypoint_mode == "sparse" else "密集"
     print("=" * 60)
     print(f"🎉 高级避障航线与打包完成！")
     print(f"📦 输出 KMZ 包路径 : {output_kmz}")
-    print(f"📍 {mode_label}航点：{len(all_waypoints)}个（{waypoint_mode}模式），GeoJSON 已输出：{geojson_path}")
+    print(f"📍 {mode_label}航点：{len(flight_plan.waypoints)}个（{waypoint_mode}模式），GeoJSON 已输出：{geojson_path}")
     print(f"✈️ 巡航设定高度 : {flight_alt_agl} m")
-    print(f"🗺️ 成功生成高级航线板块数 : {success_count} 个")
     print("=" * 60)
