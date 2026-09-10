@@ -1,0 +1,47 @@
+drones:
+  matrice_350_rtk:
+    name: "Matrice 350 RTK"
+    drone_enum: 89
+    drone_sub_enum: 0
+    supported_payload_ids:
+      - zenmuse_p1_35mm
+      - share_102s_oblique
+  matrice_300_rtk:
+    name: "Matrice 300 RTK"
+    drone_enum: 60
+    drone_sub_enum: 0
+    supported_payload_ids:
+      - zenmuse_p1_35mm
+      - share_102s_oblique
+  mavic_3_enterprise:
+    name: "Mavic 3 Enterprise"
+    drone_enum: 77
+    drone_sub_enum: 0
+    supported_payload_ids:
+      - mavic_3e_wide
+
+payloads:
+  zenmuse_p1_35mm:
+    name: "Zenmuse P1 35mm"
+    payload_enum: 50
+    has_gimbal: true
+    lens_type: "single"
+    sensor_width_mm: 35.9
+    sensor_height_mm: 24.0
+    focal_length_mm: 35.0
+  share_102s_oblique:
+    name: "Share 102S Oblique"
+    payload_enum: 65535
+    has_gimbal: false
+    lens_type: "oblique_5lens"
+    sensor_width_mm: 23.5
+    sensor_height_mm: 15.6
+    focal_length_mm: 25.0
+  mavic_3e_wide:
+    name: "Mavic 3E Wide"
+    payload_enum: 52
+    has_gimbal: true
+    lens_type: "single"
+    sensor_width_mm: 17.3
+    sensor_height_mm: 13.0
+    focal_length_mm: 12.3
