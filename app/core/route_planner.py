@@ -797,6 +797,20 @@ def plan_routes_from_safe_airspace(safe_airspace_file: str,
     else:
         flight_wgs84 = flight_gdf
 
+    if lens_type == "oblique_5lens":
+        try:
+            local_crs = flight_wgs84.estimate_utm_crs()
+            temp_gdf = flight_wgs84.to_crs(local_crs)
+            temp_gdf["geometry"] = temp_gdf.geometry.buffer(flight_alt_agl)
+            flight_wgs84 = temp_gdf.to_crs("EPSG:4326")
+        except Exception:
+            # Fallback if estimate_utm_crs is not available or fails
+            m_lat, m_lon = get_meter_degree_factors(flight_wgs84.geometry.centroid.y.mean())
+            # Rough estimation: use the average of lat/lon conversion factors
+            # A more robust fallback would be loop over each geometry but this is an acceptable fallback
+            deg_buffer = flight_alt_agl / ((m_lat + m_lon) / 2)
+            flight_wgs84["geometry"] = flight_wgs84.geometry.buffer(deg_buffer)
+
     calc_res = calculate_flight_parameters(
         agl_m=flight_alt_agl, fov_h_deg=fov_h, fov_v_deg=fov_v,
         forward_overlap=forward_overlap, side_overlap=side_overlap,
