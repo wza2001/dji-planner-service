@@ -41,7 +41,13 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
         lat = wp.lat
         alt = wp.alt
 
-        if wp_type in ['takeoff', 'scan_start']:
+        use_straight_line = "0"
+        if wp_type == 'ARC_ACTIVE':
+            turn_mode = 'toPointAndPassWithContinuityCurvature'
+        elif wp_type in ['LADDER_OUT', 'LADDER_CLIMB', 'LADDER_IN', 'APPROACH', 'EXIT']:
+            turn_mode = 'toPointAndStopWithDiscontinuityCurvature'
+            use_straight_line = "1"
+        elif wp_type in ['takeoff', 'scan_start']:
             turn_mode = 'coordinateTurn'
         elif wp_type == 'scan_end':
             turn_mode = 'stopAndTurn'
@@ -77,6 +83,21 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
 
         gimbal_pitch_xml = f"\n      <wpml:gimbalPitchAngle>{wp.gimbal_pitch}</wpml:gimbalPitchAngle>" if plan.has_gimbal else ""
 
+
+        if wp_type in ['ARC_ACTIVE', 'LADDER_OUT', 'LADDER_CLIMB', 'LADDER_IN', 'APPROACH', 'EXIT']:
+            heading_param = f"""
+      <wpml:waypointHeadingParam>
+        <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>
+        <wpml:waypointPoiPoint>{wp.poi_lon:.6f},{wp.poi_lat:.6f},{wp.poi_alt:.1f}</wpml:waypointPoiPoint>
+        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+      </wpml:waypointHeadingParam>"""
+        else:
+            heading_param = f"""
+      <wpml:waypointHeadingParam>
+        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+      </wpml:waypointHeadingParam>"""
+
         placemark_xml = f"""
     <Placemark>
       <Point>
@@ -84,16 +105,12 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
       </Point>
       <wpml:index>{wp.index}</wpml:index>
       <wpml:executeHeight>{alt:.1f}</wpml:executeHeight>
-      <wpml:waypointSpeed>{wp.speed}</wpml:waypointSpeed>
-      <wpml:waypointHeadingParam>
-        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
-      </wpml:waypointHeadingParam>
+      <wpml:waypointSpeed>{wp.speed}</wpml:waypointSpeed>{heading_param}
       <wpml:waypointTurnParam>
         <wpml:waypointTurnMode>{turn_mode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
-      <wpml:useStraightLine>0</wpml:useStraightLine>{gimbal_pitch_xml}{action_groups_xml}
+      <wpml:useStraightLine>{use_straight_line}</wpml:useStraightLine>{gimbal_pitch_xml}{action_groups_xml}
     </Placemark>"""
         placemark_nodes.append(placemark_xml)
 
@@ -101,7 +118,7 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
 
     total_distance = plan.total_distance_m
     duration = plan.estimated_duration_s
-    height_mode = "relativeToStartPoint"
+    height_mode = "WGS84"
 
     current_time = datetime.datetime.now().isoformat()
 
@@ -114,7 +131,7 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
     <wpml:missionConfig>
       <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
       <wpml:finishAction>goHome</wpml:finishAction>
-      <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
+      <wpml:exitOnRCLost>goContinue</wpml:exitOnRCLost>
       <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
       <wpml:globalTransitionalSpeed>{speed}</wpml:globalTransitionalSpeed>
       <wpml:globalRTHHeight>100</wpml:globalRTHHeight>
@@ -145,7 +162,7 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
 
 def generate_dji_waylines_wpml(plan: FlightPlan) -> str:
     waypoints = plan.waypoints
-    height_mode = "relativeToStartPoint"
+    height_mode = "WGS84"
     photo_spacing_m = plan.photo_spacing_m
     drone_enum = plan.drone_enum
     drone_sub_enum = plan.drone_sub_enum
@@ -159,7 +176,13 @@ def generate_dji_waylines_wpml(plan: FlightPlan) -> str:
         lat = wp.lat
         alt = wp.alt
 
-        if wp_type in ['takeoff', 'scan_start']:
+        use_straight_line = "0"
+        if wp_type == 'ARC_ACTIVE':
+            turn_mode = 'toPointAndPassWithContinuityCurvature'
+        elif wp_type in ['LADDER_OUT', 'LADDER_CLIMB', 'LADDER_IN', 'APPROACH', 'EXIT']:
+            turn_mode = 'toPointAndStopWithDiscontinuityCurvature'
+            use_straight_line = "1"
+        elif wp_type in ['takeoff', 'scan_start']:
             turn_mode = 'coordinateTurn'
         elif wp_type == 'scan_end':
             turn_mode = 'stopAndTurn'
@@ -170,6 +193,82 @@ def generate_dji_waylines_wpml(plan: FlightPlan) -> str:
 
         action_groups_xml = ""
 
+        # Facade S-Scan logic for ARC_ACTIVE
+        if wp_type == 'ARC_ACTIVE':
+            # Check if first or last ARC_ACTIVE in the layer
+            wp_idx = waypoints.index(wp)
+            is_first = (wp_idx == 0 or waypoints[wp_idx-1].type != 'ARC_ACTIVE')
+            is_last = (wp_idx == len(waypoints)-1 or waypoints[wp_idx+1].type != 'ARC_ACTIVE')
+
+            end_index = wp.index
+            if is_first:
+                # find end of this ARC_ACTIVE sequence
+                for s_wp in waypoints[wp_idx:]:
+                    if s_wp.type != 'ARC_ACTIVE':
+                        break
+                    end_index = s_wp.index
+
+            gimbal_action = f"""
+        <wpml:action>
+          <wpml:actionId>0</wpml:actionId>
+          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:gimbalPitchRotateAngle>{wp.gimbal_pitch}</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
+            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
+            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>""" if plan.has_gimbal else ""
+
+            if is_first:
+                action_groups_xml = f"""
+      <wpml:actionGroup>
+        <wpml:actionGroupId>0</wpml:actionGroupId>
+        <wpml:actionGroupStartIndex>{wp.index}</wpml:actionGroupStartIndex>
+        <wpml:actionGroupEndIndex>{wp.index}</wpml:actionGroupEndIndex>
+        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+        <wpml:actionTrigger>
+          <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
+        </wpml:actionTrigger>{gimbal_action}
+      </wpml:actionGroup>
+      <wpml:actionGroup>
+        <wpml:actionGroupId>1</wpml:actionGroupId>
+        <wpml:actionGroupStartIndex>{wp.index}</wpml:actionGroupStartIndex>
+        <wpml:actionGroupEndIndex>{end_index}</wpml:actionGroupEndIndex>
+        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+        <wpml:actionTrigger>
+          <wpml:actionTriggerType>multipleDistance</wpml:actionTriggerType>
+          <wpml:actionTriggerParam>{photo_spacing_m}</wpml:actionTriggerParam>
+        </wpml:actionTrigger>
+        <wpml:action>
+          <wpml:actionId>0</wpml:actionId>
+          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:fileSuffix>photo</wpml:fileSuffix>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>
+      </wpml:actionGroup>"""
+            elif is_last:
+                action_groups_xml = f"""
+      <wpml:actionGroup>
+        <wpml:actionGroupId>2</wpml:actionGroupId>
+        <wpml:actionGroupStartIndex>{wp.index}</wpml:actionGroupStartIndex>
+        <wpml:actionGroupEndIndex>{wp.index}</wpml:actionGroupEndIndex>
+        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+        <wpml:actionTrigger>
+          <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
+        </wpml:actionTrigger>
+        <wpml:action>
+          <wpml:actionId>0</wpml:actionId>
+          <wpml:actionActuatorFunc>stopShooting</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>
+      </wpml:actionGroup>"""
         if plan.waypoint_mode == "sparse":
             if wp_type == 'scan_start':
                 end_index = len(waypoints) - 1 # Default to last
@@ -256,6 +355,21 @@ def generate_dji_waylines_wpml(plan: FlightPlan) -> str:
 
         gimbal_pitch_xml = f"\n      <wpml:gimbalPitchAngle>{wp.gimbal_pitch}</wpml:gimbalPitchAngle>" if plan.has_gimbal else ""
 
+
+        if wp_type in ['ARC_ACTIVE', 'LADDER_OUT', 'LADDER_CLIMB', 'LADDER_IN', 'APPROACH', 'EXIT']:
+            heading_param = f"""
+      <wpml:waypointHeadingParam>
+        <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>
+        <wpml:waypointPoiPoint>{wp.poi_lon:.6f},{wp.poi_lat:.6f},{wp.poi_alt:.1f}</wpml:waypointPoiPoint>
+        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+      </wpml:waypointHeadingParam>"""
+        else:
+            heading_param = f"""
+      <wpml:waypointHeadingParam>
+        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+      </wpml:waypointHeadingParam>"""
+
         placemark_xml = f"""
     <Placemark>
       <Point>
@@ -263,16 +377,12 @@ def generate_dji_waylines_wpml(plan: FlightPlan) -> str:
       </Point>
       <wpml:index>{wp.index}</wpml:index>
       <wpml:executeHeight>{alt:.1f}</wpml:executeHeight>
-      <wpml:waypointSpeed>{wp.speed}</wpml:waypointSpeed>
-      <wpml:waypointHeadingParam>
-        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
-      </wpml:waypointHeadingParam>
+      <wpml:waypointSpeed>{wp.speed}</wpml:waypointSpeed>{heading_param}
       <wpml:waypointTurnParam>
         <wpml:waypointTurnMode>{turn_mode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
-      <wpml:useStraightLine>0</wpml:useStraightLine>{gimbal_pitch_xml}{action_groups_xml}
+      <wpml:useStraightLine>{use_straight_line}</wpml:useStraightLine>{gimbal_pitch_xml}{action_groups_xml}
     </Placemark>"""
         placemark_nodes.append(placemark_xml)
 
