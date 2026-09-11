@@ -29,3 +29,21 @@ class PlannerRequest(BaseModel):
             if self.sensor_width_mm is None or self.sensor_height_mm is None or self.focal_length_mm is None:
                 raise ValueError("sensor_width_mm, sensor_height_mm, and focal_length_mm are required when is_custom_camera is True")
         return self
+
+class Viewpoint(BaseModel):
+    lat: float
+    lon: float
+
+class FacadeRequest(BaseModel):
+    building_geometry: Union[Dict[str, Any], str] = Field(
+        ...,
+        description="GeoJSON Polygon or WKT of the building perimeter footprint"
+    )
+    ground_alt_m: float = Field(..., description="Base elevation (WGS84 ellipsoidal height)")
+    building_height_m: float = Field(..., description="Absolute building height above ground")
+    viewpoint_a: Viewpoint = Field(..., description="Recommended takeoff/line-of-sight zone for Face A")
+    viewpoint_b: Optional[Viewpoint] = Field(None, description="Recommended takeoff/line-of-sight zone for Face B")
+
+    drone_model: str = Field("matrice_400", description="Registry key for drone")
+    camera_model: str = Field("riebo_dg6p_oblique", description="Registry key for camera")
+    face_gsd_cm: float = Field(1.0, description="Target face resolution")

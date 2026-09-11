@@ -23,6 +23,8 @@ class FlightPlan(BaseModel):
     photo_spacing_m: float
     waypoint_mode: str
     waypoints: List[GenericWaypoint]
+    takeoff_ref_lon: float = 0.0
+    takeoff_ref_lat: float = 0.0
     has_gimbal: bool = True
     lens_type: str = "single"
     drone_enum: int = 68

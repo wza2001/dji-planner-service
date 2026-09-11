@@ -105,6 +105,11 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
 
     current_time = datetime.datetime.now().isoformat()
 
+    takeoff_ref = ""
+    if hasattr(plan, "takeoff_ref_lon") and hasattr(plan, "takeoff_ref_lat") and plan.takeoff_ref_lon != 0.0 and plan.takeoff_ref_lat != 0.0:
+        takeoff_ref = f"""
+      <wpml:takeOffRefPoint>{plan.takeoff_ref_lon},{plan.takeoff_ref_lat}</wpml:takeOffRefPoint>"""
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.2">
   <Document>
@@ -112,7 +117,7 @@ def generate_dji_template_kml(plan: FlightPlan) -> str:
     <wpml:createTime>{current_time}</wpml:createTime>
     <wpml:updateTime>{current_time}</wpml:updateTime>
     <wpml:missionConfig>
-      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
+      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>{takeoff_ref}
       <wpml:finishAction>goHome</wpml:finishAction>
       <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
       <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>

@@ -6,11 +6,12 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, F
 from fastapi.responses import FileResponse
 from shapely.geometry import mapping
 
-from app.models.schemas import PlannerRequest
+from app.models.schemas import PlannerRequest, FacadeRequest
 from app.core.route_planner import plan_routes_from_safe_airspace
 from app.core.parsers.factory import BoundaryParserFactory
 from app.core.registry import DeviceRegistry
 from app.models.hardware import LensType
+from app.services.facade_service import generate_facade_kmz_bundle
 
 # 1. 先实例化 FastAPI 应用
 app = FastAPI(title="DJI Route Planner API")
@@ -265,4 +266,18 @@ async def generate_kmz_from_file(
             remove_file(tmp_geojson)
         if output_file:
             remove_file(output_file)
+        raise HTTPException(status_code=500, detail=f"Planning error: {str(e)}")
+
+@app.post("/api/v1/planner/generate_facade_kmz")
+def generate_facade_kmz(request: FacadeRequest, background_tasks: BackgroundTasks):
+    try:
+        output_file = generate_facade_kmz_bundle(request)
+        background_tasks.add_task(remove_file, output_file)
+
+        return FileResponse(
+            path=output_file,
+            media_type="application/zip",
+            filename="building_facade_inspection.zip"
+        )
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Planning error: {str(e)}")
