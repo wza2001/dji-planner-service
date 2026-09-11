@@ -26,9 +26,12 @@ def get_turn_mode(heading_in: float, heading_out: float) -> str:
 
 
 
-def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_enum: int = 52) -> str:
+def generate_dji_template_kml(plan: FlightPlan) -> str:
     waypoints = plan.waypoints
     speed = plan.flight_speed
+    drone_enum = plan.drone_enum
+    drone_sub_enum = plan.drone_sub_enum
+    payload_enum = plan.payload_enum
 
     placemark_nodes = []
 
@@ -48,7 +51,7 @@ def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_en
             turn_mode = 'coordinateTurn'
 
         action_groups_xml = ""
-        if wp_type == 'scan_start':
+        if plan.has_gimbal and wp_type == 'scan_start':
             action_groups_xml = f"""
       <wpml:actionGroup>
         <wpml:actionGroupId>0</wpml:actionGroupId>
@@ -62,7 +65,7 @@ def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_en
           <wpml:actionId>0</wpml:actionId>
           <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
-            <wpml:gimbalPitchRotateAngle>-90</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalPitchRotateAngle>{wp.gimbal_pitch}</wpml:gimbalPitchRotateAngle>
             <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
             <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
             <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
@@ -71,6 +74,8 @@ def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_en
           </wpml:actionActuatorFuncParam>
         </wpml:action>
       </wpml:actionGroup>"""
+
+        gimbal_pitch_xml = f"\n      <wpml:gimbalPitchAngle>{wp.gimbal_pitch}</wpml:gimbalPitchAngle>" if plan.has_gimbal else ""
 
         placemark_xml = f"""
     <Placemark>
@@ -88,8 +93,7 @@ def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_en
         <wpml:waypointTurnMode>{turn_mode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
-      <wpml:useStraightLine>0</wpml:useStraightLine>
-      <wpml:gimbalPitchAngle>{wp.gimbal_pitch}</wpml:gimbalPitchAngle>{action_groups_xml}
+      <wpml:useStraightLine>0</wpml:useStraightLine>{gimbal_pitch_xml}{action_groups_xml}
     </Placemark>"""
         placemark_nodes.append(placemark_xml)
 
@@ -116,7 +120,7 @@ def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_en
       <wpml:globalRTHHeight>100</wpml:globalRTHHeight>
       <wpml:droneInfo>
         <wpml:droneEnumValue>{drone_enum}</wpml:droneEnumValue>
-        <wpml:droneSubEnumValue>0</wpml:droneSubEnumValue>
+        <wpml:droneSubEnumValue>{drone_sub_enum}</wpml:droneSubEnumValue>
       </wpml:droneInfo>
       <wpml:payloadInfo>
         <wpml:payloadEnumValue>{payload_enum}</wpml:payloadEnumValue>
@@ -139,10 +143,13 @@ def generate_dji_template_kml(plan: FlightPlan, drone_enum: int = 68, payload_en
   </Document>
 </kml>"""
 
-def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_enum: int = 52) -> str:
+def generate_dji_waylines_wpml(plan: FlightPlan) -> str:
     waypoints = plan.waypoints
     height_mode = "relativeToStartPoint"
     photo_spacing_m = plan.photo_spacing_m
+    drone_enum = plan.drone_enum
+    drone_sub_enum = plan.drone_sub_enum
+    payload_enum = plan.payload_enum
 
     placemark_nodes = []
 
@@ -171,6 +178,20 @@ def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_e
                         end_index = s_wp.index
                         break
 
+                gimbal_action = f"""
+        <wpml:action>
+          <wpml:actionId>0</wpml:actionId>
+          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:gimbalPitchRotateAngle>{wp.gimbal_pitch}</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
+            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
+            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>""" if plan.has_gimbal else ""
+
                 action_groups_xml = f"""
       <wpml:actionGroup>
         <wpml:actionGroupId>0</wpml:actionGroupId>
@@ -179,19 +200,7 @@ def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_e
         <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
         <wpml:actionTrigger>
           <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
-        </wpml:actionTrigger>
-        <wpml:action>
-          <wpml:actionId>0</wpml:actionId>
-          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:gimbalPitchRotateAngle>-90</wpml:gimbalPitchRotateAngle>
-            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
-            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
-            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
-            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>
+        </wpml:actionTrigger>{gimbal_action}
       </wpml:actionGroup>
       <wpml:actionGroup>
         <wpml:actionGroupId>1</wpml:actionGroupId>
@@ -212,6 +221,20 @@ def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_e
         </wpml:action>
       </wpml:actionGroup>"""
         else: # dense 模式
+            gimbal_action = f"""
+        <wpml:action>
+          <wpml:actionId>0</wpml:actionId>
+          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:gimbalPitchRotateAngle>{wp.gimbal_pitch}</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
+            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
+            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>""" if plan.has_gimbal else ""
+
             action_groups_xml = f"""
       <wpml:actionGroup>
         <wpml:actionGroupId>0</wpml:actionGroupId>
@@ -220,19 +243,7 @@ def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_e
         <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
         <wpml:actionTrigger>
           <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
-        </wpml:actionTrigger>
-        <wpml:action>
-          <wpml:actionId>0</wpml:actionId>
-          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:gimbalPitchRotateAngle>-90</wpml:gimbalPitchRotateAngle>
-            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
-            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
-            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
-            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>
+        </wpml:actionTrigger>{gimbal_action}
         <wpml:action>
           <wpml:actionId>1</wpml:actionId>
           <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
@@ -242,6 +253,8 @@ def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_e
           </wpml:actionActuatorFuncParam>
         </wpml:action>
       </wpml:actionGroup>"""
+
+        gimbal_pitch_xml = f"\n      <wpml:gimbalPitchAngle>{wp.gimbal_pitch}</wpml:gimbalPitchAngle>" if plan.has_gimbal else ""
 
         placemark_xml = f"""
     <Placemark>
@@ -259,8 +272,7 @@ def generate_dji_waylines_wpml(plan: FlightPlan, drone_enum: int = 68, payload_e
         <wpml:waypointTurnMode>{turn_mode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
-      <wpml:useStraightLine>0</wpml:useStraightLine>
-      <wpml:gimbalPitchAngle>{wp.gimbal_pitch}</wpml:gimbalPitchAngle>{action_groups_xml}
+      <wpml:useStraightLine>0</wpml:useStraightLine>{gimbal_pitch_xml}{action_groups_xml}
     </Placemark>"""
         placemark_nodes.append(placemark_xml)
 
@@ -296,8 +308,6 @@ def package_dji_kmz_bytes(template_kml_str: str, waylines_wpml_str: str) -> byte
 
 class DJIWPMLPackageExporter(BaseFlightPlanExporter):
     def export(self, plan: FlightPlan, **kwargs) -> Union[bytes, str]:
-        drone_enum = kwargs.get('drone_enum', 68)
-        payload_enum = kwargs.get('payload_enum', 52)
         output_path = kwargs.get('output_path', None)
 
         if not plan.waypoints:
@@ -306,8 +316,8 @@ class DJIWPMLPackageExporter(BaseFlightPlanExporter):
                 pass
             b = mem_zip.getvalue()
         else:
-            template_kml_str = generate_dji_template_kml(plan, drone_enum=drone_enum, payload_enum=payload_enum)
-            waylines_wpml_str = generate_dji_waylines_wpml(plan, drone_enum=drone_enum, payload_enum=payload_enum)
+            template_kml_str = generate_dji_template_kml(plan)
+            waylines_wpml_str = generate_dji_waylines_wpml(plan)
             b = package_dji_kmz_bytes(template_kml_str, waylines_wpml_str)
 
         if output_path:

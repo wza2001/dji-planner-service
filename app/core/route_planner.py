@@ -739,7 +739,10 @@ def plan_routes_from_safe_airspace(safe_airspace_file: str,
                                    output_kmz: str = "output/flight_routes.kmz",
                                    waypoint_mode: str = "sparse",
                                    drone_enum: int = 68,
-                                   payload_enum: int = 52):
+                                   drone_sub_enum: int = 0,
+                                   payload_enum: int = 52,
+                                   has_gimbal: bool = True,
+                                   lens_type: str = "single"):
     """
     【单次精确路线规划与 KMZ 打包主控】
 
@@ -856,6 +859,12 @@ def plan_routes_from_safe_airspace(safe_airspace_file: str,
             waypoint_mode=waypoint_mode,
             waypoints=[]
         )
+
+    flight_plan.drone_enum = drone_enum
+    flight_plan.drone_sub_enum = drone_sub_enum
+    flight_plan.payload_enum = payload_enum
+    flight_plan.has_gimbal = has_gimbal
+    flight_plan.lens_type = lens_type
 
     os.makedirs(os.path.dirname(output_kmz), exist_ok=True)
 
