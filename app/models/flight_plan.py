@@ -12,6 +12,9 @@ class GenericWaypoint(BaseModel):
     heading_out: float = 0.0
     heading_change: float = 0.0
     gimbal_pitch: float = -90.0
+    poi_lon: float = 0.0
+    poi_lat: float = 0.0
+    poi_alt: float = 0.0
     segment_idx: int = -1
 
 class FlightPlan(BaseModel):
