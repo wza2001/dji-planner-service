@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+from typing import Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from shapely.geometry import mapping
@@ -8,6 +9,8 @@ from shapely.geometry import mapping
 from app.models.schemas import PlannerRequest
 from app.core.route_planner import plan_routes_from_safe_airspace
 from app.core.parsers.factory import BoundaryParserFactory
+from app.core.registry import DeviceRegistry
+from app.models.hardware import LensType
 
 # 1. 先实例化 FastAPI 应用
 app = FastAPI(title="DJI Route Planner API")
@@ -20,6 +23,71 @@ def remove_file(path: str):
     except Exception:
         pass
 
+
+def resolve_hardware_params(
+    drone_model: Optional[str],
+    camera_model: Optional[str],
+    is_custom_camera: bool,
+    sensor_width_mm: Optional[float],
+    sensor_height_mm: Optional[float],
+    focal_length_mm: Optional[float],
+    has_gimbal: Optional[bool],
+    lens_type: Optional[str],
+    default_drone_enum: int,
+    default_payload_enum: int,
+    default_fov_h: float,
+    default_fov_v: float
+) -> dict:
+    drone_enum = default_drone_enum
+    payload_enum = default_payload_enum
+    fov_h = default_fov_h
+    fov_v = default_fov_v
+    final_has_gimbal = has_gimbal if has_gimbal is not None else True
+    final_lens_type = lens_type if lens_type is not None else "single"
+
+    try:
+        if is_custom_camera:
+            if sensor_width_mm and sensor_height_mm and focal_length_mm:
+                payload_spec = DeviceRegistry.build_custom_payload(
+                    name="custom_camera",
+                    sensor_width_mm=sensor_width_mm,
+                    sensor_height_mm=sensor_height_mm,
+                    focal_length_mm=focal_length_mm,
+                    has_gimbal=final_has_gimbal,
+                    lens_type=LensType(final_lens_type)
+                )
+                fov_h = payload_spec.fov_h
+                fov_v = payload_spec.fov_v
+                final_has_gimbal = payload_spec.has_gimbal
+                final_lens_type = payload_spec.lens_type.value
+                payload_enum = payload_spec.payload_enum
+
+            if drone_model:
+                drone_spec = DeviceRegistry.get_drone(drone_model)
+                drone_enum = drone_spec.drone_enum
+        else:
+            if drone_model:
+                drone_spec = DeviceRegistry.get_drone(drone_model)
+                drone_enum = drone_spec.drone_enum
+
+            if camera_model:
+                payload_spec = DeviceRegistry.get_payload(camera_model)
+                payload_enum = payload_spec.payload_enum
+                fov_h = payload_spec.fov_h
+                fov_v = payload_spec.fov_v
+                final_has_gimbal = payload_spec.has_gimbal
+                final_lens_type = payload_spec.lens_type.value
+    except Exception as e:
+        print(f"Warning: Failed to resolve hardware parameters from registry: {e}")
+
+    return {
+        "drone_enum": drone_enum,
+        "payload_enum": payload_enum,
+        "fov_h": fov_h,
+        "fov_v": fov_v,
+        "has_gimbal": final_has_gimbal,
+        "lens_type": final_lens_type
+    }
 
 # 2. 原有的 JSON 接口
 @app.post("/api/v1/planner/generate_kmz")
@@ -35,9 +103,24 @@ def generate_kmz(request: PlannerRequest, background_tasks: BackgroundTasks):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp_out:
             output_file = tmp_out.name
 
+        hw_params = resolve_hardware_params(
+            drone_model=request.drone_model,
+            camera_model=request.camera_model,
+            is_custom_camera=request.is_custom_camera,
+            sensor_width_mm=request.sensor_width_mm,
+            sensor_height_mm=request.sensor_height_mm,
+            focal_length_mm=request.focal_length_mm,
+            has_gimbal=request.has_gimbal,
+            lens_type=request.lens_type,
+            default_drone_enum=request.drone_enum,
+            default_payload_enum=request.payload_enum,
+            default_fov_h=request.fov_h,
+            default_fov_v=request.fov_v
+        )
+
         camera_info = {
-            "fov_horizontal_deg": request.fov_h,
-            "fov_vertical_deg": request.fov_v
+            "fov_horizontal_deg": hw_params["fov_h"],
+            "fov_vertical_deg": hw_params["fov_v"]
         }
 
         plan_routes_from_safe_airspace(
@@ -49,8 +132,10 @@ def generate_kmz(request: PlannerRequest, background_tasks: BackgroundTasks):
             side_overlap=request.overlap_s,
             output_kmz=output_file,
             waypoint_mode=request.waypoint_mode,
-            drone_enum=request.drone_enum,
-            payload_enum=request.payload_enum
+            drone_enum=hw_params["drone_enum"],
+            payload_enum=hw_params["payload_enum"],
+            has_gimbal=hw_params["has_gimbal"],
+            lens_type=hw_params["lens_type"]
         )
 
         if not os.path.exists(output_file):
@@ -88,7 +173,15 @@ async def generate_kmz_from_file(
     overlap_s: float = Form(0.7),
     drone_enum: int = Form(95),
     payload_enum: int = Form(52),
-    waypoint_mode: str = Form("sparse")
+    waypoint_mode: str = Form("sparse"),
+    drone_model: Optional[str] = Form("matrice_350_rtk"),
+    camera_model: Optional[str] = Form("zenmuse_p1_35mm"),
+    is_custom_camera: bool = Form(False),
+    sensor_width_mm: Optional[float] = Form(None),
+    sensor_height_mm: Optional[float] = Form(None),
+    focal_length_mm: Optional[float] = Form(None),
+    has_gimbal: Optional[bool] = Form(True),
+    lens_type: Optional[str] = Form("single")
 ):
     tmp_geojson = None
     output_file = None
@@ -116,9 +209,24 @@ async def generate_kmz_from_file(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp_out:
             output_file = tmp_out.name
 
+        hw_params = resolve_hardware_params(
+            drone_model=drone_model,
+            camera_model=camera_model,
+            is_custom_camera=is_custom_camera,
+            sensor_width_mm=sensor_width_mm,
+            sensor_height_mm=sensor_height_mm,
+            focal_length_mm=focal_length_mm,
+            has_gimbal=has_gimbal,
+            lens_type=lens_type,
+            default_drone_enum=drone_enum,
+            default_payload_enum=payload_enum,
+            default_fov_h=fov_h,
+            default_fov_v=fov_v
+        )
+
         camera_info = {
-            "fov_horizontal_deg": fov_h,
-            "fov_vertical_deg": fov_v
+            "fov_horizontal_deg": hw_params["fov_h"],
+            "fov_vertical_deg": hw_params["fov_v"]
         }
 
         # 3. 规划航线
@@ -131,8 +239,10 @@ async def generate_kmz_from_file(
             side_overlap=overlap_s,
             output_kmz=output_file,
             waypoint_mode=waypoint_mode,
-            drone_enum=drone_enum,
-            payload_enum=payload_enum
+            drone_enum=hw_params["drone_enum"],
+            payload_enum=hw_params["payload_enum"],
+            has_gimbal=hw_params["has_gimbal"],
+            lens_type=hw_params["lens_type"]
         )
 
         if not os.path.exists(output_file):
