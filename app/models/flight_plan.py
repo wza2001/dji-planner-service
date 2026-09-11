@@ -23,6 +23,11 @@ class FlightPlan(BaseModel):
     photo_spacing_m: float
     waypoint_mode: str
     waypoints: List[GenericWaypoint]
+    has_gimbal: bool = True
+    lens_type: str = "single"
+    drone_enum: int = 68
+    drone_sub_enum: int = 0
+    payload_enum: int = 52
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
