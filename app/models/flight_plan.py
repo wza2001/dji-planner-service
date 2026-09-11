@@ -12,9 +12,6 @@ class GenericWaypoint(BaseModel):
     heading_out: float = 0.0
     heading_change: float = 0.0
     gimbal_pitch: float = -90.0
-    poi_lon: float = 0.0
-    poi_lat: float = 0.0
-    poi_alt: float = 0.0
     segment_idx: int = -1
 
 class FlightPlan(BaseModel):
@@ -26,6 +23,8 @@ class FlightPlan(BaseModel):
     photo_spacing_m: float
     waypoint_mode: str
     waypoints: List[GenericWaypoint]
+    takeoff_ref_lon: float = 0.0
+    takeoff_ref_lat: float = 0.0
     has_gimbal: bool = True
     lens_type: str = "single"
     drone_enum: int = 68
